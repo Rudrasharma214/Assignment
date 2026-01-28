@@ -49,5 +49,7 @@ const PollSchema = new Schema(
   }
 );
 
+PollSchema.index({ status: 1, createdAt: -1 });
+
 export const Poll = model("Poll", PollSchema);
 

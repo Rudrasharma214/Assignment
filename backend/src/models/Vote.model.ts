@@ -29,9 +29,11 @@ const VoteSchema = new Schema(
 );
 
 VoteSchema.index(
-  { pollId: 1, studentSessionId: 1, studentName: 1 },
+  { pollId: 1, studentSessionId: 1 },
   { unique: true }
 );
+
+VoteSchema.index({ pollId: 1, optionId: 1 });
 
 export const Vote = model("Vote", VoteSchema);
 
