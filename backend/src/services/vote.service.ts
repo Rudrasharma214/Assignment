@@ -4,16 +4,18 @@ export class VoteService {
 
   static async submitVote(
     pollId: string,
-    studentName: string,
+    studentSessionId: string,
     optionId: string
   ) {
 
-    if (!studentName) {
-      throw new Error("Student not identified");
+    if (!studentSessionId) {
+      throw new Error("Student session not identified");
     }
 
-    const existing =
-      await Vote.findOne({ pollId, studentName });
+    const existing = await Vote.findOne({
+      pollId,
+      studentSessionId
+    });
 
     if (existing) {
       throw new Error("Already voted");
@@ -21,7 +23,7 @@ export class VoteService {
 
     await Vote.create({
       pollId,
-      studentName,
+      studentSessionId,
       optionId
     });
 
@@ -30,8 +32,7 @@ export class VoteService {
 
   static async getResults(pollId: string) {
 
-    const votes =
-      await Vote.find({ pollId });
+    const votes = await Vote.find({ pollId });
 
     const resultMap: Record<string, number> = {};
 

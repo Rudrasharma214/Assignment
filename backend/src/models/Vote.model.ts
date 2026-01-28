@@ -13,6 +13,11 @@ const VoteSchema = new Schema(
       required: true
     },
 
+    studentSessionId: {
+      type: String,
+      required: true
+    },
+
     optionId: {
       type: Types.ObjectId,
       required: true
@@ -24,8 +29,9 @@ const VoteSchema = new Schema(
 );
 
 VoteSchema.index(
-  { pollId: 1, studentName: 1 },
+  { pollId: 1, studentSessionId: 1, studentName: 1 },
   { unique: true }
 );
 
 export const Vote = model("Vote", VoteSchema);
+

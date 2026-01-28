@@ -6,7 +6,9 @@ export class PollController {
   static async createPoll(req: Request, res: Response) {
     try {
       const poll =
-        await PollService.createPoll(req.body);
+        await PollService.createPoll(req.body, (pollId: string, results: Record<string, number>) => {
+          console.log(`Poll ${pollId} ended with results:`, results);
+        });
 
       res.status(201).json(poll);
     } catch (error: any) {

@@ -27,6 +27,12 @@ const PollSchema = new Schema(
       required: true
     },
 
+    startedAt: {
+      type: Date,
+      required: true,
+      default: () => new Date()
+    },
+
     duration: {
       type: Number,
       required: true
@@ -44,3 +50,4 @@ const PollSchema = new Schema(
 );
 
 export const Poll = model("Poll", PollSchema);
+
