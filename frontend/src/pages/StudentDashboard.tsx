@@ -1,13 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useSocket } from '../hooks/useSocket';
 import { usePollState } from '../hooks/usePollState';
 import { usePollTimer } from '../hooks/usePollTimer';
 import { getOrCreateStudentSessionId, getStudentName, setStudentName as saveStudentName } from '../utils/session';
-import { PollQuestion } from '../components/PollQuestion';
+import { calculateTotalVotes, calculatePercentage } from '../utils/pollCalculations';
 import { StudentName } from '../components/StudentName';
 import { OptionButton } from '../components/OptionButton';
 import { Timer } from '../components/Timer';
-import { ResultsList } from '../components/ResultsList';
 import type {
     PollStatePayload,
     PollStartedPayload,
@@ -38,6 +37,47 @@ export function StudentDashboard() {
     const [selectedOption, setSelectedOption] = useState<string | null>(null);
     const [joinError, setJoinError] = useState<string | null>(null);
     const [voteError, setVoteError] = useState<string | null>(null);
+    const [isLoadingState, setIsLoadingState] = useState(true);
+
+    const safeResults = results ?? {};
+    const totalVotes = useMemo(() => calculateTotalVotes(safeResults), [safeResults]);
+
+    const stateRef = useRef({ updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined });
+
+    useEffect(() => {
+        stateRef.current = { updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined };
+    });
+
+    useEffect(() => {
+        const timeout = setTimeout(() => {
+            if (isLoadingState) {
+                console.warn('Loading timeout reached');
+                setIsLoadingState(false);
+            }
+        }, 10000);
+
+        return () => clearTimeout(timeout);
+    }, [isLoadingState]);
+
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (!e.defaultPrevented) {
+                sessionStorage.setItem('student_tab_closing', 'true');
+            }
+        };
+
+        const handlePageShow = () => {
+            sessionStorage.removeItem('student_tab_closing');
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        window.addEventListener('pageshow', handlePageShow);
+
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('pageshow', handlePageShow);
+        };
+    }, []);
 
     useEffect(() => {
         const savedName = getStudentName();
@@ -48,6 +88,8 @@ export function StudentDashboard() {
                 studentSessionId: sessionId,
                 studentName: savedName
             });
+        } else if (!savedName) {
+            setIsLoadingState(false);
         }
     }, [socket, hasJoined]);
 
@@ -66,26 +108,30 @@ export function StudentDashboard() {
     useEffect(() => {
         const handlePollStateOnJoin = (payload: PollStatePayload) => {
             if (!hasJoined && studentName.trim()) {
-                setHasJoined(true);
-                setJoinError(null);
+                stateRef.current.setHasJoined(true);
+                stateRef.current.setJoinError(null);
             }
-            updateFromServerState(
+            stateRef.current.updateFromServerState(
                 payload.poll,
                 payload.remainingTime,
                 payload.results,
                 payload.hasVoted
             );
             setSelectedOption(null);
+            stateRef.current.setIsLoadingState(false);
         };
 
         const handleErrorOnJoin = (payload: ErrorPayload) => {
             console.error('Socket error:', payload.message);
+            stateRef.current.setIsLoadingState(false);
             if (payload.message.includes('name') && payload.message.includes('taken')) {
-                setJoinError(payload.message);
-                setHasJoined(false);
+                stateRef.current.setJoinError(payload.message);
+                stateRef.current.setHasJoined(false);
             } else if (hasJoined) {
-                setVoteError(payload.message);
-                setTimeout(() => setVoteError(null), 3000);
+                stateRef.current.setVoteError(payload.message);
+                setTimeout(() => stateRef.current.setVoteError(null), 3000);
+            } else {
+                stateRef.current.setJoinError(payload.message);
             }
         };
 
@@ -96,27 +142,27 @@ export function StudentDashboard() {
             socket.off('poll_state', handlePollStateOnJoin);
             socket.off('error', handleErrorOnJoin);
         };
-    }, [socket, studentName, hasJoined, updateFromServerState]);
+    }, [socket, studentName, hasJoined]);
 
     useEffect(() => {
         if (!hasJoined) return;
 
         const handlePollStarted = (payload: PollStartedPayload) => {
-            setPoll(payload.poll);
-            setServerRemainingTime(payload.remainingTime);
-            setResults(payload.results);
-            setHasVoted(false);
+            stateRef.current.setPoll(payload.poll);
+            stateRef.current.setServerRemainingTime(payload.remainingTime);
+            stateRef.current.setResults(payload.results);
+            stateRef.current.setHasVoted(false);
             setSelectedOption(null);
-            setVoteError(null);
+            stateRef.current.setVoteError(null);
         };
 
         const handleVoteUpdate = (payload: VoteUpdatePayload) => {
-            setResults(payload.results);
+            stateRef.current.setResults(payload.results);
         };
 
         const handlePollEnded = (payload: PollEndedPayload) => {
-            setResults(payload.results);
-            setServerRemainingTime(0);
+            stateRef.current.setResults(payload.results);
+            stateRef.current.setServerRemainingTime(0);
         };
 
         const handleConnect = () => {
@@ -139,24 +185,38 @@ export function StudentDashboard() {
             socket.off('poll_ended', handlePollEnded);
             socket.off('connect', handleConnect);
         };
-    }, [
-        hasJoined,
-        socket,
-        studentName,
-        setPoll,
-        setResults,
-        setHasVoted,
-        setServerRemainingTime
-    ]);
+    }, [hasJoined, socket, studentName]);
 
-    const handleVote = useCallback((optionId: string) => {
-        if (poll && !hasVoted && remainingTime > 0) {
+    const handleSelectOption = useCallback((optionId: string) => {
+        if (!hasVoted && remainingTime > 0) {
             setSelectedOption(optionId);
+        }
+    }, [hasVoted, remainingTime]);
+
+    const handleSubmitVote = useCallback(() => {
+        if (poll && selectedOption && !hasVoted && remainingTime > 0) {
             setVoteError(null);
-            socket.emit('submit_vote', { pollId: poll.id, optionId });
+            socket.emit('submit_vote', { pollId: poll.id, optionId: selectedOption });
             setHasVoted(true);
         }
-    }, [poll, hasVoted, remainingTime, socket, setHasVoted]);
+    }, [poll, selectedOption, hasVoted, remainingTime, socket, setHasVoted]);
+
+    if (isLoadingState) {
+        return (
+            <div className="min-h-screen bg-white flex items-center justify-center">
+                <div className="text-center">
+                    <div className="inline-flex items-center gap-2 px-4 py-1 rounded-full bg-[#6C4CF1] text-white text-xs font-semibold mb-4">
+                        <Sparkles size={16} />
+                        Intervue Poll
+                    </div>
+                    <div className="flex justify-center mb-4">
+                        <div className="spinner" />
+                    </div>
+                    <p className="text-gray-500 text-sm">Loading...</p>
+                </div>
+            </div>
+        );
+    }
 
     if (!hasJoined) {
         return (
@@ -169,8 +229,9 @@ export function StudentDashboard() {
         );
     }
 
-    const isExpired = remainingTime === 0;
-    const showResults = hasVoted || isExpired;
+    const isExpired = (remainingTime === 0) || (poll?.status === 'ENDED' && poll !== null);
+    const showResults = (hasVoted ?? false) || isExpired;
+    const isButtonDisabled = (hasVoted ?? false) || isExpired;
 
     return (
         <div className="min-h-screen bg-white flex items-center justify-center p-6">
@@ -186,34 +247,73 @@ export function StudentDashboard() {
                         )}
 
                         <div className="border border-purple-300 rounded-md overflow-hidden">
-                            <PollQuestion question={poll.question} />
+                            <div className="bg-gray-700 text-white px-4 py-3 text-sm font-medium rounded-t-md">
+                                {poll.question}
+                            </div>
 
                             <div className="p-4 space-y-3">
-                                {poll.options.map((option, idx) => (
-                                    <OptionButton
-                                        key={option.id}
-                                        index={idx}
-                                        text={option.text}
-                                        disabled={hasVoted || isExpired}
-                                        selected={selectedOption === option.id}
-                                        onClick={() => handleVote(option.id)}
-                                    />
-                                ))}
+                                {showResults ? (
+                                    poll.options.map((option, idx) => {
+                                        const votes = safeResults[option.id] ?? 0;
+                                        const percentage = calculatePercentage(votes, totalVotes);
+
+                                        return (
+                                            <div
+                                                key={option.id}
+                                                className="relative h-12 rounded-md overflow-hidden bg-[#E8E8E8]"
+                                            >
+                                                <div
+                                                    className="absolute left-0 top-0 h-full bg-[#7C6CF6]"
+                                                    style={{ width: `${percentage}%` }}
+                                                />
+                                                <div className="relative h-full flex items-center justify-between px-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-[#7C6CF6] text-white">
+                                                            {idx + 1}
+                                                        </div>
+                                                        <span className="text-sm font-medium text-gray-800">
+                                                            {option.text}
+                                                        </span>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-gray-800">
+                                                        {percentage}%
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                ) : (
+                                    poll.options.map((option, idx) => (
+                                        <OptionButton
+                                            key={option.id}
+                                            index={idx}
+                                            text={option.text}
+                                            disabled={isButtonDisabled}
+                                            selected={selectedOption === option.id}
+                                            onClick={() => handleSelectOption(option.id)}
+                                        />
+                                    ))
+                                )}
                             </div>
                         </div>
 
-                        <div className="flex justify-end">
-                            <button
-                                disabled={hasVoted || isExpired}
-                                className="px-10 py-2.5 rounded-full bg-[#6E6BD8] text-white text-sm font-medium disabled:opacity-50"
-                            >
-                                Submit
-                            </button>
-                        </div>
+                        {!showResults && (
+                            <div className="flex justify-end">
+                                <button
+                                    onClick={handleSubmitVote}
+                                    disabled={isButtonDisabled || !selectedOption}
+                                    className="px-10 py-2.5 rounded-full bg-[#6E6BD8] text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Submit
+                                </button>
+                            </div>
+                        )}
 
                         {showResults && (
-                            <div className="mt-6">
-                                <ResultsList options={poll.options} results={results} />
+                            <div className="text-center py-4">
+                                <p className="text-gray-800 text-2xl font-medium">
+                                    Wait for the teacher to ask a new question..
+                                </p>
                             </div>
                         )}
                     </div>

@@ -14,7 +14,6 @@ export const connectDB = async (): Promise<void> => {
     mongoose.connection.on('disconnected', () => {
       console.log('MongoDB disconnected');
       isConnected = false;
-      // Attempt reconnection
       scheduleReconnect();
     });
 

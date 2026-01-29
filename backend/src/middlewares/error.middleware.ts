@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { STATUS } from '../constants/statusCodes';
 import AppError from '../utils/appError';
+import { sendErrorResponse } from '../utils/response';
 import { config } from '../config/env';
 
 export const errorHandler = (
@@ -31,10 +32,6 @@ export const errorHandler = (
         message = 'Invalid ID format';
     }
 
-    res.status(statusCode).json({
-        success: false,
-        message,
-        status: statusCode,
-        stack: config.NODE_ENV === 'production' ? undefined : err.stack,
-    });
+    const errorData = config.NODE_ENV === 'production' ? null : { stack: err.stack };
+    sendErrorResponse(res, statusCode, message, errorData);
 };

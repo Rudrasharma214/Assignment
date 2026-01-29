@@ -27,7 +27,8 @@ export function usePollTimer(serverRemainingTime: number) {
             if (remaining <= 0) {
                 clearInterval(interval);
             }
-        }, 100); 
+        }, 1000);
+
         return () => clearInterval(interval);
     }, [serverRemainingTime]);
 

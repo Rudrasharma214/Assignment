@@ -38,7 +38,7 @@ export function StudentName({ studentName, setStudentName, onJoin, error }: Prop
                         value={studentName}
                         onChange={(e) => setStudentName(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && onJoin()}
-                        placeholder="Rahul Bajaj"
+                        placeholder="Rudra Sharma"
                         className={`w-full px-4 py-3 rounded-sm bg-gray-100 border focus:outline-none focus:ring-2 focus:ring-purple-500 ${error ? 'border-red-500' : 'border-gray-200'
                             }`}
                     />

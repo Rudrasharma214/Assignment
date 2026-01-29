@@ -37,9 +37,18 @@ export function useSocket() {
         }
     }, []);
 
+    const safeEmit = useCallback((event: string, ...args: any[]) => {
+        if (socket.connected) {
+            socket.emit(event, ...args);
+        } else {
+            console.warn(`Cannot emit ${event}: socket not connected`);
+        }
+    }, []);
+
     return {
         socket,
         requestPollState,
         isConnected: () => isConnectedRef.current,
+        safeEmit,
     };
 }

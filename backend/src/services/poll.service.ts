@@ -1,10 +1,21 @@
 import { Poll } from "../models/Poll.model";
 import { Vote } from "../models/Vote.model";
+import mongoose from "mongoose";
+import AppError from "../utils/appError";
+import { STATUS } from "../constants/statusCodes";
 
 const pollTimers: Map<string, NodeJS.Timeout> = new Map();
 
-// Track connected students for "all students answered" check
 const connectedStudents: Map<string, { sessionId: string; name: string }> = new Map();
+
+export function aggregateResults(votes: Array<{ optionId: any }>): Record<string, number> {
+    const resultMap: Record<string, number> = {};
+    votes.forEach(v => {
+        const key = v.optionId.toString();
+        resultMap[key] = (resultMap[key] || 0) + 1;
+    });
+    return resultMap;
+}
 
 export class PollService {
     static addConnectedStudent(socketId: string, sessionId: string, name: string) {
@@ -13,6 +24,15 @@ export class PollService {
 
     static removeConnectedStudent(socketId: string) {
         connectedStudents.delete(socketId);
+    }
+
+    static isStudentNameTaken(name: string, excludeSocketId?: string): boolean {
+        for (const [socketId, student] of connectedStudents.entries()) {
+            if (student.name.toLowerCase() === name.toLowerCase() && socketId !== excludeSocketId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static getConnectedStudentCount(): number {
@@ -27,34 +47,28 @@ export class PollService {
         const activePoll = await Poll.findOne({ status: "ACTIVE" });
 
         if (!activePoll) {
-            // No active poll, can create
             return { canCreate: true };
         }
 
         const remaining = this.calculateRemainingTime(activePoll);
         if (remaining <= 0) {
-            // Poll time expired, end it and allow new poll
             await this.endPoll(activePoll._id.toString(), onPollEnded);
             return { canCreate: true };
         }
 
-        // Check if all connected students have voted
         const connectedSessionIds = this.getConnectedStudentSessionIds();
         if (connectedSessionIds.length === 0) {
-            // No students connected, allow new poll creation
             return { canCreate: false, reason: "Active poll in progress. Wait for timer to expire." };
         }
 
         const voteCount = await Vote.countDocuments({ pollId: activePoll._id });
 
-        // Check if all connected students have voted
         const allStudentVotes = await Vote.find({
             pollId: activePoll._id,
             studentSessionId: { $in: connectedSessionIds }
         });
 
         if (allStudentVotes.length >= connectedSessionIds.length) {
-            // All connected students have voted, end poll and allow new one
             await this.endPoll(activePoll._id.toString(), onPollEnded);
             return { canCreate: true };
         }
@@ -74,7 +88,7 @@ export class PollService {
         const { canCreate, reason } = await this.canCreateNewPoll(onPollEnded);
 
         if (!canCreate) {
-            throw new Error(reason || "Cannot create new poll at this time");
+            throw new AppError(reason || "Cannot create new poll at this time", STATUS.BAD_REQUEST);
         }
 
         const now = new Date();
@@ -96,18 +110,8 @@ export class PollService {
         return Poll.findOne({ status: "ACTIVE" });
     }
 
-    static async getActivePollWithState() {
-        const poll = await this.getActivePoll();
-        if (!poll) return null;
-
-        const results = await this.getResults(poll._id.toString());
-        const remainingTime = this.calculateRemainingTime(poll);
-
-        return {
-            poll,
-            results,
-            remainingTime
-        };
+    static async getMostRecentPoll() {
+        return Poll.findOne({}).sort({ createdAt: -1 }).exec();
     }
 
     static calculateRemainingTime(poll: any) {
@@ -152,44 +156,33 @@ export class PollService {
     }
 
     static async getResults(pollId: string) {
-        const votes = await Vote.find({ pollId });
-
-        const resultMap: Record<string, number> = {};
-
-        votes.forEach(v => {
-            const key = v.optionId.toString();
-            resultMap[key] = (resultMap[key] || 0) + 1;
-        });
-
-        return resultMap;
-    }
-
-    static async getHistory() {
-        return Poll.find({ status: "ENDED" }).sort({ createdAt: -1 });
-    }
-
-    static async getPollById(pollId: string) {
-        const poll = await Poll.findById(pollId);
-        if (!poll) return null;
-
-        const results = await this.getResults(pollId);
-        return { poll, results };
+        const votes = await Vote.find({ pollId }).lean();
+        return aggregateResults(votes);
     }
 
     static async getHistoryWithResults() {
-        const polls = await Poll.find({ status: "ENDED" }).sort({ createdAt: -1 });
+        const polls = await Poll.find({ status: "ENDED" }).sort({ createdAt: -1 }).lean();
 
-        const pollsWithResults = await Promise.all(
-            polls.map(async (poll) => {
-                const results = await this.getResults(poll._id.toString());
-                return {
-                    poll,
-                    results
-                };
-            })
-        );
+        if (polls.length === 0) {
+            return [];
+        }
 
-        return pollsWithResults;
+        const pollIds = polls.map(p => p._id);
+        const votes = await Vote.find({ pollId: { $in: pollIds } }).lean();
+
+        const votesByPoll = new Map<string, Array<{ optionId: any }>>();
+        votes.forEach(vote => {
+            const pollId = vote.pollId.toString();
+            if (!votesByPoll.has(pollId)) {
+                votesByPoll.set(pollId, []);
+            }
+            votesByPoll.get(pollId)!.push(vote);
+        });
+
+        return polls.map(poll => ({
+            poll,
+            results: aggregateResults(votesByPoll.get(poll._id.toString()) || [])
+        }));
     }
 
     static async recoverTimers(onPollEnded: (pollId: string, results: Record<string, number>) => void) {
@@ -206,10 +199,138 @@ export class PollService {
         }
     }
 
-    static clearTimer(pollId: string) {
-        if (pollTimers.has(pollId)) {
-            clearTimeout(pollTimers.get(pollId));
-            pollTimers.delete(pollId);
+    static async handleStudentJoin(
+        studentSessionId: string,
+        studentName: string,
+        socketId: string
+    ): Promise<{
+        poll: any | null;
+        remainingTime: number;
+        results: Record<string, number>;
+        hasVoted: boolean
+    }> {
+        this.addConnectedStudent(socketId, studentSessionId, studentName);
+
+        const activePoll = await this.getActivePoll();
+        let mostRecentPoll = activePoll;
+
+        if (!activePoll) {
+            const recentPoll = await this.getMostRecentPoll();
+            if (recentPoll && recentPoll.status === "ENDED") {
+                const studentVoted = await Vote.findOne({
+                    pollId: recentPoll._id,
+                    studentSessionId
+                }).lean();
+                if (studentVoted) {
+                    mostRecentPoll = recentPoll;
+                }
+            }
         }
+
+        if (mostRecentPoll) {
+            const remaining = mostRecentPoll.status === "ACTIVE"
+                ? this.calculateRemainingTime(mostRecentPoll)
+                : 0;
+            const results = await this.getResults(mostRecentPoll._id.toString());
+            const hasVoted = !!(await Vote.findOne({
+                pollId: mostRecentPoll._id,
+                studentSessionId
+            }).lean());
+
+            return {
+                poll: mostRecentPoll,
+                remainingTime: remaining,
+                results,
+                hasVoted
+            };
+        }
+
+        return {
+            poll: null,
+            remainingTime: 0,
+            results: {},
+            hasVoted: false
+        };
+    }
+
+    static async handleTeacherJoin(
+        isRefresh: boolean
+    ): Promise<{
+        poll: any | null;
+        remainingTime: number;
+        results: Record<string, number>;
+        studentCount: number;
+        voteCount: number;
+    }> {
+        const activePoll = await this.getActivePoll();
+        let pollToShow = activePoll;
+
+        if (!activePoll && isRefresh) {
+            pollToShow = await this.getMostRecentPoll();
+        }
+
+        if (pollToShow) {
+            const remaining = pollToShow.status === "ACTIVE"
+                ? this.calculateRemainingTime(pollToShow)
+                : 0;
+            const results = await this.getResults(pollToShow._id.toString());
+            const voteCount = await Vote.countDocuments({ pollId: pollToShow._id });
+
+            return {
+                poll: pollToShow,
+                remainingTime: remaining,
+                results,
+                studentCount: this.getConnectedStudentCount(),
+                voteCount
+            };
+        }
+
+        return {
+            poll: null,
+            remainingTime: 0,
+            results: {},
+            studentCount: this.getConnectedStudentCount(),
+            voteCount: 0
+        };
+    }
+
+    static async handleRequestPollState(
+        studentSessionId?: string
+    ): Promise<{
+        poll: any | null;
+        remainingTime: number;
+        results: Record<string, number>;
+        hasVoted: boolean;
+    }> {
+        const activePoll = await this.getActivePoll();
+        const mostRecentPoll = activePoll || await this.getMostRecentPoll();
+
+        if (mostRecentPoll) {
+            const remaining = mostRecentPoll.status === "ACTIVE"
+                ? this.calculateRemainingTime(mostRecentPoll)
+                : 0;
+            const results = await this.getResults(mostRecentPoll._id.toString());
+            const hasVoted = studentSessionId
+                ? !!(await Vote.findOne({ pollId: mostRecentPoll._id, studentSessionId }).lean())
+                : false;
+
+            return {
+                poll: mostRecentPoll,
+                remainingTime: remaining,
+                results,
+                hasVoted
+            };
+        }
+
+        return {
+            poll: null,
+            remainingTime: 0,
+            results: {},
+            hasVoted: false
+        };
+    }
+
+    static validatePollId(pollId: string): boolean {
+        return mongoose.Types.ObjectId.isValid(pollId);
     }
 }

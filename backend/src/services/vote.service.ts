@@ -1,6 +1,9 @@
 import { Vote } from "../models/Vote.model";
 import { Poll } from "../models/Poll.model";
 import mongoose from "mongoose";
+import { aggregateResults } from "./poll.service";
+import AppError from "../utils/appError";
+import { STATUS } from "../constants/statusCodes";
 
 export class VoteService {
   static async submitVote(
@@ -8,48 +11,43 @@ export class VoteService {
     studentSessionId: string,
     studentName: string,
     optionId: string
-  ) {
+  ): Promise<{ results: Record<string, number>; voteCount: number; allVoted: boolean; studentCount: number }> {
 
     if (!studentSessionId) {
-      throw new Error("Student session not identified");
+      throw new AppError("Student session not identified", STATUS.BAD_REQUEST);
     }
 
     if (!studentName) {
-      throw new Error("Student name is required");
+      throw new AppError("Student name is required", STATUS.BAD_REQUEST);
     }
 
-    const poll = await Poll.findById(pollId);
+    if (!mongoose.Types.ObjectId.isValid(pollId)) {
+      throw new AppError("Invalid poll ID", STATUS.BAD_REQUEST);
+    }
+
+    const poll = await Poll.findById(pollId).lean();
     if (!poll) {
-      throw new Error("Poll not found");
+      throw new AppError("Poll not found", STATUS.NOT_FOUND);
     }
 
     if (poll.status !== "ACTIVE") {
-      throw new Error("Poll has ended");
+      throw new AppError("Poll has ended", STATUS.BAD_REQUEST);
     }
 
     const elapsed = Date.now() - new Date(poll.startedAt).getTime();
     const remaining = poll.duration * 1000 - elapsed;
     if (remaining <= 0) {
-      throw new Error("Poll time has expired");
+      throw new AppError("Poll time has expired", STATUS.BAD_REQUEST);
     }
 
     const optionExists = poll.options.some(
       (opt: any) => opt._id.toString() === optionId
     );
     if (!optionExists) {
-      throw new Error("Invalid option");
+      throw new AppError("Invalid option", STATUS.BAD_REQUEST);
     }
 
     try {
-      const existingVote = await Vote.findOne({
-        pollId: new mongoose.Types.ObjectId(pollId),
-        studentSessionId
-      }).lean();
-
-      if (existingVote) {
-        throw new Error("Already voted");
-      }
-
       await Vote.create({
         pollId: new mongoose.Types.ObjectId(pollId),
         studentSessionId,
@@ -58,33 +56,37 @@ export class VoteService {
       });
     } catch (error: any) {
       if (error.code === 11000) {
-        throw new Error("Already voted");
+        throw new AppError("Already voted", STATUS.CONFLICT);
       }
-      if (error.message === "Already voted") {
+      if (error instanceof AppError) {
         throw error;
       }
       throw error;
     }
 
-    return this.getResults(pollId);
+    const [votes, voteCount] = await Promise.all([
+      Vote.find({ pollId }).lean(),
+      Vote.countDocuments({ pollId })
+    ]);
+
+    const results = aggregateResults(votes);
+
+    return {
+      results,
+      voteCount,
+      allVoted: false,
+      studentCount: 0
+    };
   }
 
   static async hasVoted(pollId: string, studentSessionId: string): Promise<boolean> {
-    const existing = await Vote.findOne({ pollId, studentSessionId });
+    const existing = await Vote.findOne({ pollId, studentSessionId }).lean();
     return !!existing;
   }
 
   static async getResults(pollId: string) {
-    const votes = await Vote.find({ pollId });
-
-    const resultMap: Record<string, number> = {};
-
-    votes.forEach(v => {
-      const key = v.optionId.toString();
-      resultMap[key] = (resultMap[key] || 0) + 1;
-    });
-
-    return resultMap;
+    const votes = await Vote.find({ pollId }).lean();
+    return aggregateResults(votes);
   }
 
   static async getVoteCount(pollId: string): Promise<number> {
