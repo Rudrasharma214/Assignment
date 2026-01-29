@@ -3,10 +3,16 @@ import cors from "cors";
 import pollRoutes from "./routes/poll.routes";
 import { errorHandler } from "./middlewares/error.middleware";
 import { isDBConnected } from "./config/database";
+import { config } from "./config/env";
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: config.FRONTEND_URL || "http://localhost:5173",
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {

@@ -8,6 +8,7 @@ export const config = {
     NODE_ENV: process.env.NODE_ENV || 'development',
     PORT: parseInt(process.env.PORT || '5000', 10),
     MONGODB_URI: process.env.MONGODB_URI || 'mongodb://localhost:27017/polling-system',
+    FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
 };
 
 if (config.NODE_ENV === 'production') {
