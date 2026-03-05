@@ -7,6 +7,7 @@ import { calculateTotalVotes, calculatePercentage } from '../utils/pollCalculati
 import { StudentName } from '../components/StudentName';
 import { OptionButton } from '../components/OptionButton';
 import { Timer } from '../components/Timer';
+import { ChatPopup } from '../components/ChatPopup';
 import type {
     PollStatePayload,
     PollStartedPayload,
@@ -38,14 +39,15 @@ export function StudentDashboard() {
     const [joinError, setJoinError] = useState<string | null>(null);
     const [voteError, setVoteError] = useState<string | null>(null);
     const [isLoadingState, setIsLoadingState] = useState(true);
+    const [isKicked, setIsKicked] = useState(false);
 
     const safeResults = results ?? {};
     const totalVotes = useMemo(() => calculateTotalVotes(safeResults), [safeResults]);
 
-    const stateRef = useRef({ updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined });
+    const stateRef = useRef({ updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined, setIsKicked });
 
     useEffect(() => {
-        stateRef.current = { updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined };
+        stateRef.current = { updateFromServerState, setPoll, setResults, setHasVoted, setServerRemainingTime, setIsLoadingState, setJoinError, setVoteError, setHasJoined, setIsKicked };
     });
 
     useEffect(() => {
@@ -58,6 +60,18 @@ export function StudentDashboard() {
 
         return () => clearTimeout(timeout);
     }, [isLoadingState]);
+
+    useEffect(() => {
+        const handleKicked = () => {
+            // Do NOT clear the session — the session ID must remain in sessionStorage
+            // so that on socket auto-reconnect, join_student is sent with the same ID
+            // which the server will block via kickedSessionIds.
+            setIsKicked(true);
+        };
+
+        socket.on('kicked', handleKicked);
+        return () => { socket.off('kicked', handleKicked); };
+    }, [socket]);
 
     useEffect(() => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -201,6 +215,26 @@ export function StudentDashboard() {
         }
     }, [poll, selectedOption, hasVoted, remainingTime, socket, setHasVoted]);
 
+    if (isKicked) {
+        return (
+            <div className="min-h-screen bg-white flex items-center justify-center px-4">
+                <div className="text-center max-w-md">
+                    <div className="inline-flex items-center gap-2 px-4 py-1 rounded-full bg-[#6C4CF1] text-white text-xs font-semibold mb-6">
+                        <Sparkles size={16} />
+                        Intervue Poll
+                    </div>
+                    <h1 className="text-3xl font-bold text-gray-900 mb-3">
+                        You've been Kicked out !
+                    </h1>
+                    <p className="text-gray-500 text-sm leading-relaxed">
+                        Looks like the teacher had removed you from the poll system .Please
+                        Try again sometime.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     if (isLoadingState) {
         return (
             <div className="min-h-screen bg-white flex items-center justify-center">
@@ -336,6 +370,8 @@ export function StudentDashboard() {
                     </div>
                 )}
             </div>
+
+            <ChatPopup socket={socket} senderName={studentName} isTeacher={false} />
         </div>
     );
 }

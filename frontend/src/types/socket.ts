@@ -50,3 +50,15 @@ export interface SubmitVotePayload {
 export interface ErrorPayload {
     message: string;
 }
+
+export interface ChatMessage {
+    senderName: string;
+    senderRole: 'teacher' | 'student';
+    content: string;
+    timestamp: number;
+}
+
+export interface Participant {
+    socketId: string;
+    name: string;
+}

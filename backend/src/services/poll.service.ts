@@ -43,6 +43,14 @@ export class PollService {
         return Array.from(connectedStudents.values()).map(s => s.sessionId);
     }
 
+    static getConnectedStudents(): Array<{ socketId: string; sessionId: string; name: string }> {
+        return Array.from(connectedStudents.entries()).map(([socketId, data]) => ({
+            socketId,
+            sessionId: data.sessionId,
+            name: data.name
+        }));
+    }
+
     static async canCreateNewPoll(onPollEnded: (pollId: string, results: Record<string, number>) => void): Promise<{ canCreate: boolean; reason?: string }> {
         const activePoll = await Poll.findOne({ status: "ACTIVE" });
 

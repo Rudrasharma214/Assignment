@@ -4,6 +4,7 @@ import { usePollState } from '../hooks/usePollState';
 import { usePollTimer } from '../hooks/usePollTimer';
 import { LivePollDisplay } from '../components/LivePollDisplay';
 import { CreatePollForm } from '../components/CreatePollForm';
+import { ChatPopup } from '../components/ChatPopup';
 import { fetchPollHistory } from '../services/api';
 import type { PollWithResults } from '../services/api';
 import type {
@@ -40,6 +41,7 @@ export function TeacherDashboard() {
     const [historyError, setHistoryError] = useState<string | null>(null);
     const [isLoadingState, setIsLoadingState] = useState(true);
     const [isBlocked, setIsBlocked] = useState(false);
+    const [notification, setNotification] = useState<string | null>(null);
 
     useEffect(() => {
         const timeout = setTimeout(() => {
@@ -54,10 +56,10 @@ export function TeacherDashboard() {
 
     const remainingTime = usePollTimer(serverRemainingTime);
 
-    const stateRef = useRef({ setPoll, setResults, setServerRemainingTime, setStudentCount, setVoteCount, updateFromServerState, setIsLoadingState, setIsBlocked });
+    const stateRef = useRef({ setPoll, setResults, setServerRemainingTime, setStudentCount, setVoteCount, updateFromServerState, setIsLoadingState, setIsBlocked, setNotification });
 
     useEffect(() => {
-        stateRef.current = { setPoll, setResults, setServerRemainingTime, setStudentCount, setVoteCount, updateFromServerState, setIsLoadingState, setIsBlocked };
+        stateRef.current = { setPoll, setResults, setServerRemainingTime, setStudentCount, setVoteCount, updateFromServerState, setIsLoadingState, setIsBlocked, setNotification };
     });
 
     const loadPollHistory = useCallback(async () => {
@@ -117,7 +119,8 @@ export function TeacherDashboard() {
             if (payload.message.includes('Another teacher is already connected')) {
                 stateRef.current.setIsBlocked(true);
             } else {
-                alert(payload.message);
+                stateRef.current.setNotification(payload.message);
+                setTimeout(() => stateRef.current.setNotification(null), 4000);
             }
         };
 
@@ -164,6 +167,11 @@ export function TeacherDashboard() {
 
     return (
         <div className="min-h-screen bg-white px-10 py-8">
+            {notification && (
+                <div className="fixed top-4 right-4 bg-red-500 text-white px-5 py-3 rounded-lg shadow-lg z-[60] text-sm font-medium animate-fade-in">
+                    {notification}
+                </div>
+            )}
             <div className="max-w-6xl mx-auto">
                 {isBlocked ? (
                     <div className="flex items-center justify-center min-h-[60vh]">
@@ -236,6 +244,10 @@ export function TeacherDashboard() {
                     />
                 )}
             </div>
+
+            {!isBlocked && !isLoadingState && (
+                <ChatPopup socket={socket} senderName="Teacher" isTeacher={true} />
+            )}
         </div>
     );
 }

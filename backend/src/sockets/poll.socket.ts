@@ -8,6 +8,7 @@ let teacherDisconnectTimer: NodeJS.Timeout | null = null;
 let lastTeacherPollId: string | null = null;
 
 const rateLimitMap: Map<string, { count: number; resetTime: number }> = new Map();
+const kickedSessionIds: Set<string> = new Set();
 
 function transformPoll(poll: any) {
   if (!poll) return null;
@@ -41,13 +42,13 @@ function checkRateLimit(socketId: string, maxRequests: number = 20, windowMs: nu
   return true;
 }
 
-function withDBCheck(socket: Socket, handler: () => Promise<void>) {
-  return async () => {
+function withDBCheck(socket: Socket, handler: (...args: any[]) => Promise<void>) {
+  return async (...args: any[]) => {
     if (!isDBConnected()) {
       socket.emit("error", { message: "Service temporarily unavailable. Please try again." });
       return;
     }
-    await handler();
+    await handler(...args);
   };
 }
 
@@ -60,14 +61,30 @@ export const registerPollSocket = (io: Server) => {
     });
   };
 
+  const broadcastParticipants = () => {
+    const students = PollService.getConnectedStudents();
+    const participants = students.map(s => ({ socketId: s.socketId, name: s.name }));
+    if (activeTeacherSocketId) {
+      const teacherSocket = io.sockets.sockets.get(activeTeacherSocketId);
+      if (teacherSocket) {
+        teacherSocket.emit('participants_update', participants);
+      }
+    }
+  };
+
   io.on("connection", (socket: Socket) => {
 
     console.log("Socket connected:", socket.id);
 
-    socket.on("join_student", async ({ studentSessionId, studentName }) => {
+    socket.on("join_student", withDBCheck(socket, async ({ studentSessionId, studentName }: any) => {
       try {
         if (!studentName || !studentName.trim()) {
           socket.emit("error", { message: "Student name is required" });
+          return;
+        }
+
+        if (kickedSessionIds.has(studentSessionId)) {
+          socket.emit("kicked");
           return;
         }
 
@@ -104,13 +121,14 @@ export const registerPollSocket = (io: Server) => {
             hasVoted: false
           });
         }
+        broadcastParticipants();
       } catch (error: any) {
         console.error("Error in join_student:", error);
         socket.emit("error", { message: error.message || "Failed to join" });
       }
-    });
+    }));
 
-    socket.on("join_teacher", async () => {
+    socket.on("join_teacher", withDBCheck(socket, async () => {
       try {
         if (activeTeacherSocketId && activeTeacherSocketId !== socket.id) {
           const previousSocket = io.sockets.sockets.get(activeTeacherSocketId);
@@ -151,9 +169,9 @@ export const registerPollSocket = (io: Server) => {
         console.error("Error in join_teacher:", error);
         socket.emit("error", { message: error.message || "Failed to join as teacher" });
       }
-    });
+    }));
 
-    socket.on("create_poll", async (data) => {
+    socket.on("create_poll", withDBCheck(socket, async (data: any) => {
       try {
         if (socket.data.role !== "teacher") {
           socket.emit("error", { message: "Only teachers can create polls" });
@@ -182,9 +200,9 @@ export const registerPollSocket = (io: Server) => {
         console.error("Error in create_poll:", error);
         socket.emit("error", { message: error.message || "Failed to create poll" });
       }
-    });
+    }));
 
-    socket.on("submit_vote", async ({ pollId, optionId }) => {
+    socket.on("submit_vote", withDBCheck(socket, async ({ pollId, optionId }: any) => {
       try {
         if (!checkRateLimit(socket.id, 5, 1000)) {
           socket.emit("error", { message: "Too many requests. Please slow down." });
@@ -227,9 +245,9 @@ export const registerPollSocket = (io: Server) => {
         console.error("Error in submit_vote:", error);
         socket.emit("error", { message: error.message || "Failed to submit vote" });
       }
-    });
+    }));
 
-    socket.on("request_poll_state", async () => {
+    socket.on("request_poll_state", withDBCheck(socket, async () => {
       try {
         const state = await PollService.handleRequestPollState(socket.data.studentSessionId);
 
@@ -247,6 +265,41 @@ export const registerPollSocket = (io: Server) => {
         console.error("Error in request_poll_state:", error);
         socket.emit("error", { message: error.message || "Failed to get poll state" });
       }
+    }));
+
+    // Chat messages (not persisted — live broadcast only)
+    socket.on("send_message", ({ content }) => {
+      if (!content || !content.trim()) return;
+      const senderName = socket.data.role === 'teacher' ? 'Teacher' : (socket.data.studentName || 'Anonymous');
+      const senderRole = socket.data.role || 'student';
+      const message = {
+        senderName,
+        senderRole,
+        content: content.trim().substring(0, 500),
+        timestamp: Date.now()
+      };
+      io.emit('receive_message', message);
+    });
+
+    // Participants management
+    socket.on("get_participants", () => {
+      if (socket.data.role !== 'teacher') return;
+      broadcastParticipants();
+    });
+
+    socket.on("kick_student", ({ studentSocketId }) => {
+      if (socket.data.role !== 'teacher') return;
+      const targetSocket = io.sockets.sockets.get(studentSocketId);
+      if (targetSocket && targetSocket.data.role === 'student') {
+        const sessionId = targetSocket.data.studentSessionId;
+        if (sessionId) {
+          kickedSessionIds.add(sessionId);
+        }
+        targetSocket.emit('kicked');
+        PollService.removeConnectedStudent(studentSocketId);
+        targetSocket.disconnect(true);
+        broadcastParticipants();
+      }
     });
 
     socket.on("disconnect", () => {
@@ -261,6 +314,7 @@ export const registerPollSocket = (io: Server) => {
 
       if (socket.data.role === "student") {
         PollService.removeConnectedStudent(socket.id);
+        broadcastParticipants();
       }
 
       rateLimitMap.delete(socket.id);

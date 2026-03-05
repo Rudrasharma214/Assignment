@@ -203,7 +203,7 @@ export function CreatePollForm({ onSubmit }: CreatePollFormProps) {
                 </button>
             </div>
 
-            <div className="fixed bottom-8 right-10">
+            <div className="fixed bottom-8 right-28">
                 <button
                     onClick={handleCreatePoll}
                     className="px-8 py-3 bg-[#6C4CF1] text-white rounded-full text-sm font-semibold hover:bg-[#5A3EE6]"
